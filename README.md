@@ -1,0 +1,3 @@
+# Pest Detection and Remedy Recommendation
+
+It identifies pests affecting crop leaves from images. CNN models extract important features and classify the type of pest present on the plant. YOLO algorithm helps in real-time detection and locating pests within the image using bounding boxes. NasNet automatically learns the best neural network architecture for the dataset, improving accuracy while optimizing computational efficiency. Based on the detected pest, the system provides appropriate remedy recommendations using FireBase.

@@ -1,0 +1,203 @@
+#include <SoftwareSerial.h>
+#include <ModbusMaster.h>
+
+// MAX485 Control Pins
+#define MAX485_DE 5
+#define MAX485_RE 4
+
+// Software Serial (RO -> 10, DI -> 11)
+SoftwareSerial rs485(10, 11);
+ModbusMaster node;
+
+void preTransmission()
+{
+  digitalWrite(MAX485_RE, HIGH);
+  digitalWrite(MAX485_DE, HIGH);
+}
+
+void postTransmission()
+{
+  digitalWrite(MAX485_DE, LOW);
+  digitalWrite(MAX485_RE, LOW);
+}
+
+void setup()
+{
+  pinMode(MAX485_DE, OUTPUT);
+  pinMode(MAX485_RE, OUTPUT);
+
+  digitalWrite(MAX485_DE, LOW);
+  digitalWrite(MAX485_RE, LOW);
+
+  Serial.begin(9600);
+  rs485.begin(9600);
+
+  node.begin(1, rs485);  
+  node.preTransmission(preTransmission);
+  node.postTransmission(postTransmission);
+
+  Serial.println("HW-097 NPK Sensor Started");
+}
+
+void loop()
+{
+  uint8_t result;
+
+  result = node.readHoldingRegisters(0x001E, 3);
+
+  if (result == node.ku8MBSuccess)
+  {
+    uint16_t nitrogen   = node.getResponseBuffer(0);
+    uint16_t phosphorus = node.getResponseBuffer(1);
+    uint16_t potassium  = node.getResponseBuffer(2);
+
+    Serial.println("-----------------------------");
+    Serial.print("Nitrogen   : ");
+    Serial.print(nitrogen);
+    Serial.println(" mg/kg");
+
+    Serial.print("Phosphorus : ");
+    Serial.print(phosphorus);
+    Serial.println(" mg/kg");
+
+    Serial.print("Potassium  : ");
+    Serial.print(potassium);
+    Serial.println(" mg/kg");
+  }
+  else
+  {
+    Serial.print("Modbus Error Code: ");
+    Serial.println(result);
+  }
+
+  delay(3000);
+}
+
+
+
+
+import time
+import datetime
+import serial
+import threading
+import RPi.GPIO as GPIO
+import Adafruit_DHT  # Using the working library
+import firebase_admin
+from firebase_admin import credentials, db
+
+# ---------- CONFIG ----------
+FIREBASE_CRED_FILE = "firebase_key.json"
+FIREBASE_DB_URL    = "https://maize-711be-default-rtdb.firebaseio.com/"
+
+DHT_SENSOR = Adafruit_DHT.DHT11
+DHT_PIN    = 4  # GPIO 4 (Pin 7)
+SOIL_PIN   = 17 # GPIO 17 (Pin 11)
+
+ARDUINO_PORT = "/dev/ttyACM0"
+ARDUINO_BAUD = 9600
+
+UPLOAD_INTERVAL = 5  # seconds
+
+# ---------- GPIO ----------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup(SOIL_PIN, GPIO.IN)
+
+# ---------- FIREBASE ----------
+if not firebase_admin._apps:
+    cred = credentials.Certificate(FIREBASE_CRED_FILE)
+    firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
+
+# ---------- SENSOR READING FUNCTIONS ----------
+
+def get_dht_data():
+    """Uses Adafruit_DHT for reliable reading"""
+    humidity, temperature = Adafruit_DHT.read_retry(DHT_SENSOR, DHT_PIN)
+    if humidity is not None and temperature is not None:
+        print(f"[DHT11] Temp={temperature:0.1f}C Hum={humidity:0.1f}%")
+        return round(temperature, 1), round(humidity, 1)
+    else:
+        print("[DHT11] Failed to read - check wiring")
+        return None, None
+
+def read_soil():
+    val = GPIO.input(SOIL_PIN)
+    pct = 100 if val == GPIO.LOW else 0
+    print(f"[Soil] {'Wet' if pct == 100 else 'Dry'} ({pct}%)")
+    return pct
+
+# ---------- NPK READER (Background Thread) ----------
+class ArduinoNPKReader(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.n = None
+        self.p = None
+        self.k = None
+        self._tmp_n = self._tmp_p = self._tmp_k = None
+        self.ser = None
+        try:
+            self.ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=1)
+            time.sleep(2)
+            print(f"[Arduino] Connected on {ARDUINO_PORT}")
+        except Exception as e:
+            print(f"[Arduino] Connection failed: {e}")
+
+    def _parse(self, line):
+        line = line.strip().lower()
+        if ":" not in line: return
+        key, _, rest = line.partition(":")
+        parts = rest.strip().split()
+        if not parts: return
+        try:
+            val = float(parts[0])
+            if "nitrogen" in key: self._tmp_n = val
+            elif "phosphorus" in key: self._tmp_p = val
+            elif "potassium" in key: self._tmp_k = val
+            
+            if self._tmp_n is not None and self._tmp_p is not None and self._tmp_k is not None:
+                self.n, self.p, self.k = self._tmp_n, self._tmp_p, self._tmp_k
+                print(f"[NPK] N={self.n} P={self.p} K={self.k}")
+                self._tmp_n = self._tmp_p = self._tmp_k = None
+        except ValueError: pass
+
+    def run(self):
+        if not self.ser: return
+        while True:
+            try:
+                if self.ser.in_waiting:
+                    line = self.ser.readline().decode("utf-8", errors="ignore")
+                    self._parse(line)
+            except: time.sleep(0.5)
+
+# ---------- MAIN LOOP ----------
+def main():
+    print("Starting Maize Farm Controller...")
+    npk_thread = ArduinoNPKReader()
+    npk_thread.start()
+
+    while True:
+        temp, hum = get_dht_data()
+        soil_val = read_soil()
+        
+        # Upload to Firebase
+        try:
+            db.reference("sensor_data/current").set({
+                "Temperature": temp if temp is not None else "N/A",
+                "Humidity": hum if hum is not None else "N/A",
+                "SoilMoisture": soil_val,
+                "N": npk_thread.n if npk_thread.n is not None else "N/A",
+                "P": npk_thread.p if npk_thread.p is not None else "N/A",
+                "K": npk_thread.k if npk_thread.k is not None else "N/A",
+                "LastUpdated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            print("[Firebase] Data Updated")
+        except Exception as e:
+            print(f"[Firebase] Error: {e}")
+
+        time.sleep(UPLOAD_INTERVAL)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        GPIO.cleanup()

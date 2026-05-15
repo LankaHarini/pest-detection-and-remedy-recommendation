@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 7
+names: ['fall armyworm', 'grasshoper', 'healthy', 'leaf bettle', 'leaf blight', 'leaf spot', 'streak virus']
+
+roboflow:
+  workspace: pest-disease
+  project: pest-and-disease-truwa
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/pest-disease/pest-and-disease-truwa/dataset/1

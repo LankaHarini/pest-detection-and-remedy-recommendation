@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 2
+names: ['ap', 'wh']
+
+roboflow:
+  workspace: haris-workspace-hthzt
+  project: pestnu-aphids-whiteflies-e5gm1
+  version: 1
+  license: CC BY 4.0
+  url:
